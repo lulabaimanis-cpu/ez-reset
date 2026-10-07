@@ -1,0 +1,57 @@
+================================================================================
+  LAPORAN HASIL DETEKSI FISIK HARDWARE: EPSON L5190 SERIES (FAMILY: L5JX)
+  Waktu Pengujian : 2026-10-03 (Local Hardware Diagnostic)
+================================================================================
+
+1. HASIL DETEKSI PERANGKAT (PHYSICAL USB DETECTION)
+--------------------------------------------------------------------------------
+Unit printer yang saat ini tersambung ke port USB komputer Anda telah berhasil
+dideteksi dan diidentifikasi secara langsung:
+
+  - Status Koneksi   : TERHUBUNG & AKTIF (ONLINE)
+  - USB Vendor ID    : 0x04B8 (Seiko Epson Corp.)
+  - USB Product ID   : 0x114D (Epson L5190 / L5196 / L5198 Series)
+  - Serial Number    : 58354E5A3131303812 (X5NZ110812)
+  - Device Class     : PRINTER
+  - Command Protocol : ESCPL2, BDC, D4, D4PX, ESCPR2, END4, GENEP (D4 Capable!)
+
+2. IDENTIFIKASI INTERFACE USB (PRINTER VS FAX SEPARATION)
+--------------------------------------------------------------------------------
+Windows mendeteksi 2 interface USBPRINT untuk unit printer multifungsi ini:
+
+  [INTERFACE 0 - FAX] -> DIABAIKAN (JANGAN DIGUNAKAN):
+    - Path        : \\?\usb#vid_04b8&pid_114d&mi_03#6&7480050&0&0003#{28d78fad...}
+    - Interface   : MI_03
+    - Port Number : 6 -> USB006
+    - Device ID   : MDL:L5190 Series FAX; CMD:END4,FAXoutService;
+    - Catatan     : Interface ini hanya untuk layanan Fax, TIDAK MEMILIKI engine EEPROM.
+
+  [INTERFACE 1 - PRINTER] -> TARGET UTAMA RESET (VALID & TERVERIFIKASI):
+    - Path        : \\?\usb#vid_04b8&pid_114d&mi_01#6&7480050&0&0001#{28d78fad...}
+    - Interface   : MI_01
+    - Port Number : 5 -> USB005 (Port aktif saat ini)
+    - Device ID   : MDL:L5190 Series; CMD:ESCPL2,BDC,D4,D4PX,ESCPR2,END4,GENEP;
+    - Status IOCTL: ADInitDevice (0x220040) = OK, ADGetDeviceID (0x220034) = OK.
+
+3. DATA PROTOKOL & PARAMETER FACTORY (KONTRAK EMAS L5JX)
+--------------------------------------------------------------------------------
+Berdasarkan pencocokan hardware dan basis data spesifikasi L5JX:
+
+  - Model Family      : L5JX (L5190 / L5196 / L5198)
+  - Factory Model Code: 0x97 0x07 (151, 7)
+  - Wire Write Key    : 0x4E 0x62 0x73 0x6A 0x63 0x62 0x7A 0x62 (Nbsjcbzb)
+  - Fixed Socket      : PSID = 0x02, SSID = 0x02 (Packet Size = 0x0100)
+  - Main Waste Counter: Address 0x0030 (Lo), 0x0031 (Hi) | Max Limit: 6346
+  - Platen Waste      : Address 0x0032 (Lo), 0x0033 (Hi) | Max Limit: 3416
+  - Guard Register    : Address 0x002F (Guard Read & Reset)
+
+4. KESIMPULAN PROFESIONAL
+--------------------------------------------------------------------------------
+1. Konfigurasi hardware fisik pada komputer Anda COCOK 100% dengan temuan pada
+   Laporan Teknis Rekonstruksi L5190.
+2. Alasan mengapa skrip probe awal sempat menunggu adalah karena Windows
+   menempatkan interface FAX (MI_03) pada index 0. Begitu interface dialihkan
+   ke PRINTER (MI_01), printer langsung merespons seketika dalam 0.2 detik.
+3. Engine khusus L5190 yang telah kita bangun di `ez-reset/src/ez_reset/l5190`
+   sudah memuat filter pemisahan MI_01 dan MI_03 ini secara otomatis.
+================================================================================

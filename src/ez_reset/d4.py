@@ -258,14 +258,22 @@ class D4:
 
 
 class D4ControlBackend(ControlBackend):
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, socket_id: int | None = None) -> None:
         self.transport = transport
+        self.socket_id = socket_id
         self.d4: D4 | None = None
         self.channel: D4Channel | None = None
 
     def __enter__(self) -> Self:
         self.d4 = D4(self.transport)
-        self.channel = self.d4.channel("EPSON-CTRL").__enter__()
+        if self.socket_id is not None:
+            self.channel = D4Channel(self.d4, self.socket_id).__enter__()
+        else:
+            try:
+                self.channel = self.d4.channel("EPSON-CTRL").__enter__()
+            except Exception as e:
+                logger.warning("GetSocketID('EPSON-CTRL') failed (%s), falling back to fixed socket 0x02", e)
+                self.channel = D4Channel(self.d4, 0x02).__enter__()
 
         return self
 

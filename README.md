@@ -1,23 +1,62 @@
-# ez-reset
+# ez-reset (Enhanced Fork)
 
-<img align="right" src="img.png">
+<p align="center">
+  <img src="assets/icon.png" width="160" alt="EZ-Reset Logo">
+  <br>
+  <strong>Robust, Asynchronous Waste Ink Resetter for Epson Printers via USB on Windows</strong>
+  <br>
+  <em>Enhanced fork of <a href="https://github.com/CiRIP/ez-reset">CiRIP/ez-reset</a> integrating hardware-verified protocols and reliability features from <a href="https://github.com/Ircama/epson_print_conf">Ircama/epson_print_conf</a>.</em>
+</p>
 
-Reset waste ink counters on Epson printers via USB on Windows.
+---
 
-**Want to help with development, learn more about Epson printers, or simply need help?** Join the Discord server for a new community I want to try starting called "NoSPE - No Stupid Printer Errors": https://discord.gg/fspDRHNrU3
+## 🌟 Key Enhancements in this Fork
+
+This fork addresses critical real-world communication issues, UI freezes, and hardware-specific protocols discovered during physical hardware testing with modern Epson models:
+
+### 1. Hardware-Verified Support for Epson L5190 & L5290 Series
+- **Epson L5190 (Family: L5JX, PID: `0x114D`)**: Full implementation of the **Golden Initialize Sequence** (11 Writes + 2 Guard Reads at `0x002F`, Wire Key `Nbsjcbzb`, omitting the invalid `W0100` commit).
+- **Epson L5290 (Family: L5TX, PID: `0x1185`)**: Dedicated 15-write sequence including the extra Ink System Pad registers (`0x00FC`–`0x00FF`) and factory model code `0x4A 0x36`.
+- Automatic detection and exclusion of the **FAX Interface (`MI_03`)**, ensuring only the primary printer data pipe (`MI_01`) is targeted.
+
+### 2. Windows USBPRINT Kernel Watchdog (`CancelIoEx`)
+- Standard Win32 `ReadFile` on `usbprint.sys` blocks indefinitely if the printer is busy or displays a panel error (such as *"Kendala Pemindai / Scanner Error"*).
+- Integrated a **daemon watchdog timer** that issues `CancelIoEx` after 4 seconds of inactivity, safely throwing a clean timeout instead of locking the thread or causing application crashes.
+
+### 3. IEEE 1284.4 Fixed Socket (`0x02`)
+- Firmware on L5 series printers refuses dynamic socket negotiation via `GetSocketID("EPSON-CTRL")`, causing infinite hang.
+- Automatically connects directly to fixed socket `PSID=0x02, SSID=0x02` for L5 series models.
+
+### 4. Fully Asynchronous, Non-Blocking UI
+- All USB I/O operations (Status Query, Waste Read, Permanent Reset, Temporary Reset, EEPROM Backup & Restore, Cleaning Routines) execute in background worker threads.
+- Eliminates Windows **"Not Responding"** UI freezes. Interactive status feedback (*"Connecting...", "Reading...", "Resetting..."*) is rendered smoothly on the Tkinter main loop.
+
+### 5. EEPROM Safety & Anti-Bricking Guard
+- **Read-Back Verification**: Every write is immediately read back to guarantee firmware acceptance before proceeding.
+- **Dry-Run Mode**: Allows complete simulation of the reset sequence without modifying physical EEPROM cells.
+- **Full EEPROM Backup & Restore**: Safe full-range memory dump (JSON and raw `.bin`).
+
+### 6. Native Windows Executable with Multi-Resolution DIB Icon
+- Compiled using PyInstaller with `--windowed` (no black CMD terminal window).
+- Embedded with standard Windows DIB icon (16×16 to 256×256) and explicit `AppUserModelID` for clean taskbar grouping.
+
+---
 
 ## What it does
 
-- Shows ink levels and waste ink counter status
-- Resets waste ink counters
-- Works with many Epson printer models over USB
-- Compatibility with newer Epson models/firmware (ET-2850, ET-2860, L3250, L3260, L18050, XP-2200, XP-7100, etc.) where the addition of the `SNMP_SECURITY_ACCESS_ENABLE` flag in their firmware prevents access to NVRAM factory commands over SNMP (making those models incompatible with [Ircama/epson_print_conf](https://github.com/Ircama/epson_print_conf))
+- **View & Monitor**: Displays ink levels and waste ink counter status.
+- **Permanent Waste Reset**: Resets waste ink counters with **Read-Back Write Verification**.
+- **Temporary Reset (`rw`)**: Supports temporary reset via serial number hash for firmwares with locked EEPROM write keys.
+- **EEPROM Backup & Restore**: Safe full-range dump to JSON or `.bin` backup files and verified restoration.
+- **Maintenance Tools**: Printhead nozzle check and standard/power cleaning routines over USB.
+- **Dual Interface**: Intuitive graphical interface (Tkinter) or headless command-line interface (CLI).
+- **Modern Firmware Compatibility**: Works over USB (IEEE 1284.4) on newer Epson models where network SNMP access is locked.
 
 <details>
 
-<summary>Compatible printer models</summary>
+<summary>Compatible printer models (100+ models)</summary>
 
-ez-reset has definitions for (and thus *theoretically* supports) the following printers. However, compatibility with the vast majority of models is untested.
+ez-reset has definitions for (and thus supports) the following printers:
 
 - Epson Stylus Color 760
 - Epson Stylus Color 860
@@ -1033,19 +1072,43 @@ system:
 pip install .
 ```
 
-## Usage (advanced)
+## Usage
 
-Run the GUI:
+### 1. Graphical Interface (GUI)
+Run the GUI application:
 
 ```bash
 python -m ez_reset
 ```
 
-1. The app will list detected USB printers
-2. Double-click a printer to open its control panel
-3. View ink levels and waste counter status
-4. Click "Reset All" to reset waste counters
-5. Restart your printer after resetting
+- Lists detected USB printers
+- View real-time ink levels and waste pad percentages
+- Click **"Reset Counters (Permanent)"** or **"Temporary Reset ('rw')"**
+- Use **"Backup EEPROM"** before making modifications
+- Perform **"Standard Clean"** or **"Power Clean"**
+
+### 2. Command-Line Interface (CLI)
+You can also run headless tasks directly in scripts or terminal:
+
+```bash
+# List connected printers
+python -m ez_reset -l
+
+# Check status of first printer
+python -m ez_reset -s
+
+# Backup EEPROM to JSON
+python -m ez_reset -b backup_L3250.json
+
+# Reset waste counters with read-back verification
+python -m ez_reset -r
+
+# Dry-run test (simulation without EEPROM modification)
+python -m ez_reset -r --dry-run
+
+# Temporary reset
+python -m ez_reset -t
+```
 
 ## Warning
 

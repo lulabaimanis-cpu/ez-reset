@@ -198,7 +198,10 @@ class Status:
                 ]
 
             elif header == 0x40:
-                serial = str(parameter_data)
+                try:
+                    serial = parameter_data.decode("ascii", errors="replace").strip("\x00 \r\n")
+                except Exception:
+                    serial = parameter_data.hex()
 
             else:
                 other[header] = parameter_data

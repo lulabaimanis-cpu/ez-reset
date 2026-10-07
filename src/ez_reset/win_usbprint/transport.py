@@ -1,4 +1,6 @@
+import ctypes
 import logging
+import threading
 import time
 from types import TracebackType
 from typing import Self
@@ -22,7 +24,6 @@ from ez_reset.transport import Transport
 from .winapi import IOCTL_USBPRINT_GET_1284_ID, IOCTL_USBPRINT_SOFT_RESET
 
 logger = logging.getLogger(__name__)
-
 
 MAX_TRANSFER_SIZE = 0x400000
 
@@ -67,13 +68,21 @@ class USBPRINTTransport(Transport):
         exc_tb: TracebackType | None,
     ) -> bool:
         logger.debug("Closing...")
-        self.handle.close()
-        self.closed = True
+        if not self.closed and self.handle is not None:
+            try:
+                ctypes.windll.kernel32.CancelIoEx(int(self.handle), None)
+            except Exception:
+                pass
+            try:
+                self.handle.close()
+            except Exception:
+                pass
+            self.closed = True
 
         return False
 
     def write(self, data: bytes) -> None:
-        if self.closed:
+        if self.closed or self.handle is None:
             msg = f"Handle to USBPRINT device {self.path} is closed"
             raise OSError(msg)
 
@@ -89,16 +98,55 @@ class USBPRINTTransport(Transport):
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("    Wrote %d bytes to %d", bytes_written, self.handle)
 
-    def read(self, size: int) -> bytes:
+    def _read_chunk_with_watchdog(self, size: int, timeout_sec: float = 3.0) -> bytes:
+        """Read a chunk from the USB device with a watchdog timer to abort blocking ReadFile."""
+        if self.closed or self.handle is None:
+            raise OSError(f"Handle to USBPRINT device {self.path} is closed")
+
+        handle_int = int(self.handle)
+        done_flag = threading.Event()
+
+        def _watchdog() -> None:
+            if not done_flag.wait(timeout_sec):
+                if not self.closed:
+                    try:
+                        ctypes.windll.kernel32.CancelIoEx(handle_int, None)
+                    except Exception:
+                        pass
+
+        wd = threading.Thread(target=_watchdog, daemon=True)
+        wd.start()
+
+        try:
+            _status, data = ReadFile(self.handle, size)
+            done_flag.set()
+            return data
+        except Exception as e:
+            done_flag.set()
+            # WinError 995: ERROR_OPERATION_ABORTED by CancelIoEx
+            err_code = getattr(e, "winerror", None)
+            if err_code is None and isinstance(e.args, tuple) and len(e.args) > 0:
+                err_code = e.args[0] if isinstance(e.args[0], int) else None
+
+            if err_code == 995:
+                raise TimeoutError(f"Read timed out after {timeout_sec:.1f}s (no data received from USB device).") from e
+            raise
+
+    def read(self, size: int, timeout_sec: float = 4.0) -> bytes:
         if self.closed:
             msg = f"Handle to USBPRINT device {self.path} is closed"
             raise OSError(msg)
 
+        deadline = time.time() + timeout_sec
         while len(self._buffer) < size:
-            _status, data = ReadFile(self.handle, MAX_TRANSFER_SIZE)
-            self._buffer += data
+            rem = max(0.5, deadline - time.time())
+            if time.time() >= deadline:
+                raise TimeoutError(f"Timed out waiting for {size} bytes from printer (got {len(self._buffer)} bytes).")
 
-            if len(self._buffer) < size:
+            data = self._read_chunk_with_watchdog(MAX_TRANSFER_SIZE, timeout_sec=rem)
+            if data:
+                self._buffer += data
+            else:
                 time.sleep(0.01)
 
         read = self._buffer[:size]
@@ -106,11 +154,16 @@ class USBPRINTTransport(Transport):
 
         return read
 
-    def drain(self) -> None:
-        remaining = True
-        while remaining:
-            _status, data = ReadFile(self.handle, MAX_TRANSFER_SIZE)
-            remaining = len(data) != 0
+    def drain(self, timeout_sec: float = 0.2) -> None:
+        """Safely drain any pending data in the bulk IN buffer without blocking indefinitely."""
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            try:
+                data = self._read_chunk_with_watchdog(MAX_TRANSFER_SIZE, timeout_sec=timeout_sec)
+                if not data:
+                    break
+            except (TimeoutError, OSError):
+                break
 
     def identify(self) -> str:
         return DeviceIoControl(self.handle, IOCTL_USBPRINT_GET_1284_ID, None, 1024)[2:].decode("ascii")

@@ -20,8 +20,8 @@ from ez_reset.win_usbprint import USBPRINTTransport, enumerate_printers
 logger = logging.getLogger("ez_reset")
 
 
-def get_icon_paths() -> tuple[Path | None, Path | None]:
-    """Find paths to (icon.ico, icon.png) from assets folder across frozen/dev environments."""
+def get_icon_paths() -> tuple[Path | None, Path | None, Path | None]:
+    """Find paths to (icon.ico, icon.png, icon_42.png) from assets folder across frozen/dev environments."""
     search_dirs = []
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         meipass = Path(sys._MEIPASS)
@@ -39,13 +39,19 @@ def get_icon_paths() -> tuple[Path | None, Path | None]:
 
     found_ico = None
     found_png = None
+    found_thumb = None
     for d in search_dirs:
         if not found_ico and (d / "icon.ico").exists():
             found_ico = d / "icon.ico"
         if not found_png and (d / "icon.png").exists():
             found_png = d / "icon.png"
+        if not found_thumb and (d / "icon_42.png").exists():
+            found_thumb = d / "icon_42.png"
 
-    return found_ico, found_png
+    if not found_thumb:
+        found_thumb = found_png
+
+    return found_ico, found_png, found_thumb
 
 
 _GLOBAL_ICON_PHOTO: tk.PhotoImage | None = None
@@ -54,7 +60,7 @@ _GLOBAL_ICON_PHOTO: tk.PhotoImage | None = None
 def apply_window_icon(win: tk.Misc) -> None:
     """Apply the application icon to a Tk or Toplevel window."""
     global _GLOBAL_ICON_PHOTO
-    ico_path, png_path = get_icon_paths()
+    ico_path, png_path, _thumb = get_icon_paths()
 
     if ico_path:
         try:
@@ -68,9 +74,7 @@ def apply_window_icon(win: tk.Misc) -> None:
     if png_path:
         try:
             if _GLOBAL_ICON_PHOTO is None:
-                from PIL import Image, ImageTk
-                img = Image.open(png_path)
-                _GLOBAL_ICON_PHOTO = ImageTk.PhotoImage(img)
+                _GLOBAL_ICON_PHOTO = tk.PhotoImage(file=str(png_path))
             win.iconphoto(True, _GLOBAL_ICON_PHOTO)
         except Exception as e:
             logger.debug("iconphoto error: %s", e)
@@ -87,12 +91,10 @@ class PrinterList(ttk.Frame):
         top_bar.pack(fill="x", padx=6, pady=(6, 4))
 
         self._thumb_img = None
-        _ico, png_path = get_icon_paths()
-        if png_path:
+        _ico, _png, thumb_path = get_icon_paths()
+        if thumb_path:
             try:
-                from PIL import Image, ImageTk
-                im = Image.open(png_path).resize((42, 42), Image.Resampling.LANCZOS)
-                self._thumb_img = ImageTk.PhotoImage(im)
+                self._thumb_img = tk.PhotoImage(file=str(thumb_path))
                 lbl_icon = ttk.Label(top_bar, image=self._thumb_img)
                 lbl_icon.pack(side="left", padx=(0, 8))
             except Exception:

@@ -55,28 +55,51 @@ cmd = [
     "--hidden-import=ez_reset.l5190.ctrl",
     "--hidden-import=ez_reset.l5190.workflow",
     "--hidden-import=win32file",
-    "--hidden-import=win32print",
-    "--hidden-import=win32api",
     "--hidden-import=tkinter",
     "--hidden-import=tkinter.ttk",
     "--hidden-import=tkinter.messagebox",
     "--hidden-import=tkinter.filedialog",
-    "--hidden-import=PIL",
-    "--hidden-import=PIL.Image",
-    "--hidden-import=PIL.ImageTk",
+    "--exclude-module=PIL",
+    "--exclude-module=numpy",
+    "--exclude-module=win32print",
+    "--exclude-module=win32api",
+    "--exclude-module=win32gui",
+    "--exclude-module=win32con",
+    "--exclude-module=ssl",
+    "--exclude-module=socket",
+    "--exclude-module=bz2",
+    "--exclude-module=lzma",
+    "--exclude-module=email",
+    "--exclude-module=http",
+    "--exclude-module=urllib",
+    "--exclude-module=html",
+    "--exclude-module=unittest",
+    "--exclude-module=pydoc",
+    "--exclude-module=difflib",
+    "--exclude-module=doctest",
+    "--exclude-module=multiprocessing",
+    "--exclude-module=setuptools",
+    "--exclude-module=distutils",
+    "--exclude-module=asyncio",
+    "--exclude-module=test",
+    "--exclude-module=sqlite3",
+    "--exclude-module=xmlrpc",
     str(SRC_DIR / "ez_reset" / "__main__.py"),
 ]
 
-# Ensure icon is strictly formatted as Windows DIB standard
+# Ensure icon and thumbnail are strictly formatted
 try:
     from PIL import Image
     png_icon = ASSETS_DIR / "icon.png"
     ico_icon = ASSETS_DIR / "icon.ico"
+    thumb_icon = ASSETS_DIR / "icon_42.png"
     if png_icon.exists():
         im = Image.open(png_icon).convert("RGBA")
         sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
         im.save(ico_icon, format="ICO", sizes=sizes, bitmap_format="bmp")
-        print(f"Generated Windows DIB Standard ICO: {ico_icon}")
+        im_42 = im.resize((42, 42), Image.Resampling.LANCZOS)
+        im_42.save(thumb_icon, format="PNG")
+        print(f"Generated Windows DIB Standard ICO and Thumbnail: {ico_icon}, {thumb_icon}")
 except Exception as e:
     print(f"Warning: Could not regenerate icon: {e}")
 
@@ -91,11 +114,20 @@ if res.returncode == 0:
         print(f"\nSUCCESS: Standalone executable created at:")
         print(f"  {exe_path} ({size_mb:.2f} MB)")
 
+        # Create copy with display name EZ_Reset_Epson.exe
+        epson_exe = DIST_DIR / "EZ_Reset_Epson.exe"
+        try:
+            shutil.copy2(exe_path, epson_exe)
+            print(f"  Copied display executable: {epson_exe}")
+        except Exception as e:
+            print(f"  Note: {e}")
+
         # Copy assets folder next to dist for direct access fallback
         dist_assets = DIST_DIR / "assets"
         dist_assets.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ASSETS_DIR / "icon.ico", dist_assets / "icon.ico")
         shutil.copy2(ASSETS_DIR / "icon.png", dist_assets / "icon.png")
+        shutil.copy2(ASSETS_DIR / "icon_42.png", dist_assets / "icon_42.png")
 
         # Refresh Windows Shell Icon Cache
         try:

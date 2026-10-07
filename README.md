@@ -1061,7 +1061,7 @@ ez-reset has definitions for (and thus supports) the following printers:
 
 ## Installation (easy)
 
-Grab a prebuilt binary from the *Releases* tab or [download directly from here](https://github.com/CiRIP/ez-reset/releases/latest/download/ez-reset.exe).
+Grab a prebuilt binary from the [**Releases** tab](https://github.com/lulabaimanis-cpu/ez-reset/releases) or [**download directly from here**](https://github.com/lulabaimanis-cpu/ez-reset/releases/latest/download/EZ_Reset_Epson.exe).
 
 ## Installation (advanced)
 

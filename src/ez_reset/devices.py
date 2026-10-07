@@ -54,24 +54,56 @@ def get_all_models() -> list[str]:
 
 
 def by_model(model: str) -> Device:
-    """Find device configuration by printer model name with fuzzy fallback."""
+    """Find device configuration by exact printer model name with strict normalized fallback."""
     clean_model = model.strip()
-    printer_el: Element | None = devices.find(f".//printer[@model='{clean_model}']")
+    printer_el: Element | None = None
 
-    if printer_el is None:
-        # Try stripping common suffixes like " Series", " (Copy 1)", etc.
-        normalized = re.sub(r"\s*(series|network|\(copy\s*\d+\))\s*$", "", clean_model, flags=re.IGNORECASE).strip()
-        printer_el = devices.find(f".//printer[@model='{normalized}']")
+    # 1. Exact case-sensitive match
+    for p in devices.findall(".//printer"):
+        m = p.attrib.get("model", "")
+        if m == clean_model:
+            printer_el = p
+            break
 
+    # 2. Exact case-insensitive match
     if printer_el is None:
-        # Search case-insensitively
-        target_lower = clean_model.lower()
+        clean_lower = clean_model.lower()
         for p in devices.findall(".//printer"):
             m = p.attrib.get("model", "")
-            if m.lower() == target_lower or m.lower() in target_lower or target_lower in m.lower():
+            if m.lower() == clean_lower:
                 printer_el = p
                 clean_model = m
                 break
+
+    # 3. Exact match after stripping common suffixes (" Series", " (Copy 1)", etc.)
+    def _normalize(s: str) -> str:
+        return re.sub(r"\s*(series|network|\(copy\s*\d+\))\s*$", "", s, flags=re.IGNORECASE).strip().lower()
+
+    if printer_el is None:
+        target_norm = _normalize(clean_model)
+        for p in devices.findall(".//printer"):
+            m = p.attrib.get("model", "")
+            if _normalize(m) == target_norm:
+                printer_el = p
+                clean_model = m
+                break
+
+    # 4. Epson multi-model family expansion (e.g. 'XP-205 207 Series' -> 'XP-205', 'XP-207')
+    if printer_el is None:
+        target_norm = _normalize(clean_model)
+        for p in devices.findall(".//printer"):
+            raw_m = p.attrib.get("model", "")
+            norm_m = _normalize(raw_m)
+            # Match family pattern like PREFIX-NUM NUM ... (e.g. XP-201 204 208)
+            family_match = re.match(r"^([A-Za-z]+[- ]?)(\d+)(.*)$", norm_m)
+            if family_match:
+                prefix, first_num, rest = family_match.groups()
+                other_nums = re.findall(r"\b\d+\b", rest)
+                valid_family_models = [_normalize(f"{prefix}{n}") for n in [first_num] + other_nums]
+                if target_norm in valid_family_models:
+                    printer_el = p
+                    clean_model = raw_m
+                    break
 
     if printer_el is None:
         msg = f"Printer model '{model}' not found in devices definition database."

@@ -16,3 +16,13 @@ class DeviceError(Exception):
 class ProtocolError(Exception):
     """Raised when an unexpected or malformed response is received."""
     pass
+
+
+class BackupError(Exception):
+    """Raised when EEPROM backup or dump fails (e.g. read error on any cell)."""
+    pass
+
+
+class RestoreValidationError(Exception):
+    """Raised when an EEPROM restore file fails safety or integrity validation."""
+    pass

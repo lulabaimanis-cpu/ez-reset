@@ -11,7 +11,7 @@ import traceback
 
 from ez_reset.d4 import D4ControlBackend
 from ez_reset.devices import by_model
-from ez_reset.exceptions import DeviceError, VerificationError
+from ez_reset.exceptions import BackupError, DeviceError, RestoreValidationError, VerificationError
 from ez_reset.printer import Printer
 from ez_reset.status import InkColor, InkLevel
 from ez_reset.utils import parse_identifier
@@ -324,11 +324,11 @@ class PrinterInfo(ttk.Frame):
         eeprom_row = ttk.Frame(eeprom_box)
         eeprom_row.pack(fill="x", padx=4, pady=2)
 
-        btn_backup = ttk.Button(eeprom_row, text="Backup EEPROM...", command=self.backup_eeprom)
-        btn_backup.pack(side="left", fill="x", expand=True, padx=2)
+        self.btn_backup = ttk.Button(eeprom_row, text="Backup EEPROM...", command=self.backup_eeprom)
+        self.btn_backup.pack(side="left", fill="x", expand=True, padx=2)
 
-        btn_restore = ttk.Button(eeprom_row, text="Restore EEPROM...", command=self.restore_eeprom)
-        btn_restore.pack(side="right", fill="x", expand=True, padx=2)
+        self.btn_restore = ttk.Button(eeprom_row, text="Restore EEPROM...", command=self.restore_eeprom)
+        self.btn_restore.pack(side="right", fill="x", expand=True, padx=2)
 
         # Maintenance Tools Frame
         maint_box = ttk.LabelFrame(self, text="Maintenance Utilities")
@@ -337,14 +337,14 @@ class PrinterInfo(ttk.Frame):
         maint_row = ttk.Frame(maint_box)
         maint_row.pack(fill="x", padx=4, pady=2)
 
-        btn_clean_std = ttk.Button(maint_row, text="Standard Clean", command=lambda: self.run_clean(1))
-        btn_clean_std.pack(side="left", fill="x", expand=True, padx=2)
+        self.btn_clean_std = ttk.Button(maint_row, text="Standard Clean", command=lambda: self.run_clean(1))
+        self.btn_clean_std.pack(side="left", fill="x", expand=True, padx=2)
 
-        btn_clean_pwr = ttk.Button(maint_row, text="Power Clean", command=lambda: self.run_clean(3))
-        btn_clean_pwr.pack(side="left", fill="x", expand=True, padx=2)
+        self.btn_clean_pwr = ttk.Button(maint_row, text="Power Clean", command=lambda: self.run_clean(3))
+        self.btn_clean_pwr.pack(side="left", fill="x", expand=True, padx=2)
 
-        btn_restart = ttk.Button(maint_row, text="Restart Printer", command=self.restart_printer)
-        btn_restart.pack(side="right", fill="x", expand=True, padx=2)
+        self.btn_restart = ttk.Button(maint_row, text="Restart Printer", command=self.restart_printer)
+        self.btn_restart.pack(side="right", fill="x", expand=True, padx=2)
 
         # Refresh Bar
         bottom_bar = ttk.Frame(self)
@@ -357,6 +357,24 @@ class PrinterInfo(ttk.Frame):
         self.waste: dict[int, Waste] = {}
 
         self.update_status()
+
+    def _set_controls_state(self, state: str) -> None:
+        """Lock or unlock all action controls during background operations to prevent race conditions."""
+        for btn in (
+            getattr(self, "btn_reset_perm", None),
+            getattr(self, "btn_reset_temp", None),
+            getattr(self, "btn_backup", None),
+            getattr(self, "btn_restore", None),
+            getattr(self, "btn_clean_std", None),
+            getattr(self, "btn_clean_pwr", None),
+            getattr(self, "btn_restart", None),
+            getattr(self, "refresh_btn", None),
+        ):
+            if btn is not None:
+                try:
+                    btn.config(state=state)
+                except Exception:
+                    pass
 
     def update_status(self) -> None:
         self.refresh_btn.config(state="disabled", text="Reading...")
@@ -421,7 +439,8 @@ class PrinterInfo(ttk.Frame):
             if not messagebox.askyesno(f"{prefix}L5190 Golden Initialize", prompt_msg):
                 return
 
-            self.btn_reset_perm.config(state="disabled", text="Resetting...")
+            self._set_controls_state("disabled")
+            self.btn_reset_perm.config(text="Resetting...")
 
             def _do_l5190() -> list:
                 from ez_reset.l5190.constants import GOLDEN_INITIALIZE_SEQUENCE
@@ -435,18 +454,21 @@ class PrinterInfo(ttk.Frame):
                             except Exception:
                                 old_v = -1
                         self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=dry_run)
-                        report.append((addr, old_v, target_val, True))
+                        verified = True if not dry_run and verify else False
+                        report.append((addr, old_v, target_val, verified))
                     elif action == "READ":
                         if not dry_run:
                             self.printer.read_eeprom(addr)
                 return report
 
             def _on_ok(_result) -> None:
-                self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+                self._set_controls_state("normal")
+                self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 self.update_status()
+                verif_text = "Terverifikasi (Read-Back OK)" if verify else "Selesai (Verifikasi non-aktif)"
                 messagebox.showinfo(
                     "Initialize Acknowledged",
-                    f"{prefix}L5190 Golden Initialize Selesai (11/11 ACK ||:42:OK; Terverifikasi)!\n\n"
+                    f"{prefix}L5190 Golden Initialize Selesai (11/11 ACK ||:42:OK; {verif_text})!\n\n"
                     "Langkah Wajib Power-Cycle (Sesuai Laporan Teknis):\n"
                     "1. Matikan tombol daya printer (Power OFF).\n"
                     "2. Tunggu lampu printer mati total.\n"
@@ -455,7 +477,8 @@ class PrinterInfo(ttk.Frame):
                 )
 
             def _on_err(e: Exception) -> None:
-                self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+                self._set_controls_state("normal")
+                self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 if isinstance(e, VerificationError):
                     messagebox.showerror("Verification Failed", f"EEPROM Write Failed Verification!\n\n{e}")
                 else:
@@ -490,7 +513,8 @@ class PrinterInfo(ttk.Frame):
             if not messagebox.askyesno(f"{prefix}L5290 Golden Initialize", prompt_msg):
                 return
 
-            self.btn_reset_perm.config(state="disabled", text="Resetting...")
+            self._set_controls_state("disabled")
+            self.btn_reset_perm.config(text="Resetting...")
 
             def _do_l5290() -> list:
                 from ez_reset.l5190.constants import GOLDEN_INITIALIZE_SEQUENCE
@@ -510,18 +534,21 @@ class PrinterInfo(ttk.Frame):
                             except Exception:
                                 old_v = -1
                         self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=dry_run)
-                        report.append((addr, old_v, target_val, True))
+                        verified = True if not dry_run and verify else False
+                        report.append((addr, old_v, target_val, verified))
                     elif action == "READ":
                         if not dry_run:
                             self.printer.read_eeprom(addr)
                 return report
 
             def _on_ok_l5290(_result) -> None:
-                self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+                self._set_controls_state("normal")
+                self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 self.update_status()
+                verif_text = "Terverifikasi (Read-Back OK)" if verify else "Selesai (Verifikasi non-aktif)"
                 messagebox.showinfo(
                     "Initialize Acknowledged",
-                    f"{prefix}L5290 Golden Initialize Selesai (15/15 ACK ||:42:OK; Terverifikasi)!\n\n"
+                    f"{prefix}L5290 Golden Initialize Selesai (15/15 ACK ||:42:OK; {verif_text})!\n\n"
                     "Langkah Wajib Power-Cycle:\n"
                     "1. Matikan tombol daya printer (Power OFF).\n"
                     "2. Tunggu lampu printer mati total.\n"
@@ -530,7 +557,8 @@ class PrinterInfo(ttk.Frame):
                 )
 
             def _on_err_l5290(e: Exception) -> None:
-                self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+                self._set_controls_state("normal")
+                self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 if isinstance(e, VerificationError):
                     messagebox.showerror("Verification Failed", f"EEPROM Write Failed Verification!\n\n{e}")
                 else:
@@ -554,13 +582,15 @@ class PrinterInfo(ttk.Frame):
         ):
             return
 
-        self.btn_reset_perm.config(state="disabled", text="Resetting...")
+        self._set_controls_state("disabled")
+        self.btn_reset_perm.config(text="Resetting...")
 
         def _do_generic() -> list:
             return self.printer.reset_waste(verify=verify, dry_run=dry_run)
 
         def _on_ok_generic(report: list) -> None:
-            self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+            self._set_controls_state("normal")
+            self.btn_reset_perm.config(text="Reset Counters (Permanent)")
             self.update_status()
             summary = "\n".join(
                 f"Address 0x{addr:04X}: Old=0x{old_val:02X} -> New=0x{new_val:02X} (Verified: {ok})"
@@ -574,7 +604,8 @@ class PrinterInfo(ttk.Frame):
             )
 
         def _on_err_generic(e: Exception) -> None:
-            self.btn_reset_perm.config(state="normal", text="Reset Counters (Permanent)")
+            self._set_controls_state("normal")
+            self.btn_reset_perm.config(text="Reset Counters (Permanent)")
             if isinstance(e, VerificationError):
                 messagebox.showerror("Verification Failed", f"EEPROM Write Failed Verification!\n\n{e}")
             else:
@@ -601,7 +632,8 @@ class PrinterInfo(ttk.Frame):
         ):
             return
 
-        self.btn_reset_temp.config(state="disabled", text="Processing...")
+        self._set_controls_state("disabled")
+        self.btn_reset_temp.config(text="Processing...")
 
         def _worker() -> None:
             try:
@@ -611,7 +643,8 @@ class PrinterInfo(ttk.Frame):
                 self.after(0, lambda: _fail(e))
 
         def _done(success: bool) -> None:
-            self.btn_reset_temp.config(state="normal", text="Temporary Reset ('rw')")
+            self._set_controls_state("normal")
+            self.btn_reset_temp.config(text="Temporary Reset ('rw')")
             self.update_status()
             if success:
                 messagebox.showinfo("Temporary Reset", f"{prefix}Temporary reset command acknowledged by printer.")
@@ -619,7 +652,8 @@ class PrinterInfo(ttk.Frame):
                 messagebox.showwarning("Temporary Reset", "Printer responded with refusal (:NA;).")
 
         def _fail(e: Exception) -> None:
-            self.btn_reset_temp.config(state="normal", text="Temporary Reset ('rw')")
+            self._set_controls_state("normal")
+            self.btn_reset_temp.config(text="Temporary Reset ('rw')")
             messagebox.showerror("Error", f"Failed to execute temporary reset:\n{e}")
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -634,6 +668,7 @@ class PrinterInfo(ttk.Frame):
         if not filepath:
             return
 
+        self._set_controls_state("disabled")
         self.winfo_toplevel().config(cursor="watch")
         self.winfo_toplevel().update()
 
@@ -645,15 +680,20 @@ class PrinterInfo(ttk.Frame):
                 self.after(0, lambda: _fail(e))
 
         def _done(dump: dict) -> None:
+            self._set_controls_state("normal")
             self.winfo_toplevel().config(cursor="")
             messagebox.showinfo(
                 "Backup Saved",
-                f"Successfully backed up {len(dump)} EEPROM bytes to:\n{Path(filepath).name}",
+                f"Successfully backed up {len(dump)} EEPROM bytes to:\n{Path(filepath).name}\n\n(Integrity verified via SHA-256)",
             )
 
         def _fail(e: Exception) -> None:
+            self._set_controls_state("normal")
             self.winfo_toplevel().config(cursor="")
-            messagebox.showerror("Backup Error", f"Failed to backup EEPROM:\n{e}")
+            if isinstance(e, BackupError):
+                messagebox.showerror("Backup Incomplete", f"Backup dibatalkan demi keselamatan printer:\n\n{e}")
+            else:
+                messagebox.showerror("Backup Error", f"Failed to backup EEPROM:\n{e}")
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -675,6 +715,7 @@ class PrinterInfo(ttk.Frame):
         ):
             return
 
+        self._set_controls_state("disabled")
         self.winfo_toplevel().config(cursor="watch")
         self.winfo_toplevel().update()
 
@@ -686,6 +727,7 @@ class PrinterInfo(ttk.Frame):
                 self.after(0, lambda: _fail(e))
 
         def _done(report: list) -> None:
+            self._set_controls_state("normal")
             self.winfo_toplevel().config(cursor="")
             self.update_status()
             messagebox.showinfo(
@@ -694,8 +736,12 @@ class PrinterInfo(ttk.Frame):
             )
 
         def _fail(e: Exception) -> None:
+            self._set_controls_state("normal")
             self.winfo_toplevel().config(cursor="")
-            messagebox.showerror("Restore Error", f"Failed to restore EEPROM:\n{e}")
+            if isinstance(e, RestoreValidationError):
+                messagebox.showerror("Validation Error", f"Restore Ditolak (Proteksi Keselamatan):\n\n{e}")
+            else:
+                messagebox.showerror("Restore Error", f"Failed to restore EEPROM:\n{e}")
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -704,12 +750,20 @@ class PrinterInfo(ttk.Frame):
         if not messagebox.askyesno("Clean Nozzles", f"Start {desc} routine on printer?"):
             return
 
+        self._set_controls_state("disabled")
+
         def _worker() -> None:
             try:
                 self.printer.clean(level=level)
-                self.after(0, lambda: messagebox.showinfo("Cleaning Started", f"{desc} command sent. Please wait for printer to finish."))
+                self.after(0, lambda: (
+                    self._set_controls_state("normal"),
+                    messagebox.showinfo("Cleaning Started", f"{desc} command sent. Please wait for printer to finish.")
+                ))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Error", f"Failed to start cleaning:\n{e}"))
+                self.after(0, lambda: (
+                    self._set_controls_state("normal"),
+                    messagebox.showerror("Error", f"Failed to start cleaning:\n{e}")
+                ))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -717,12 +771,20 @@ class PrinterInfo(ttk.Frame):
         if not messagebox.askyesno("Restart", "Send restart command to printer?"):
             return
 
+        self._set_controls_state("disabled")
+
         def _worker() -> None:
             try:
                 self.printer.restart()
-                self.after(0, lambda: messagebox.showinfo("Restart", "Restart command issued."))
+                self.after(0, lambda: (
+                    self._set_controls_state("normal"),
+                    messagebox.showinfo("Restart", "Restart command issued.")
+                ))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Error", f"Failed to restart printer:\n{e}"))
+                self.after(0, lambda: (
+                    self._set_controls_state("normal"),
+                    messagebox.showerror("Error", f"Failed to restart printer:\n{e}")
+                ))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -831,11 +893,25 @@ def run_cli(args: argparse.Namespace) -> int:
                 print(f"Backup complete. {len(dump)} bytes saved.")
 
             if args.restore:
+                if not args.yes and not args.dry_run:
+                    st = printer.get_status()
+                    confirm = input(f"\nWARNING: Restoring EEPROM will overwrite memory on {des_name} (SN: {st.serial}).\nProceed? [y/N]: ").strip().lower()
+                    if confirm not in ("y", "yes"):
+                        print("Restore aborted by user.")
+                        return 0
+
                 print(f"\nRestoring EEPROM from {args.restore} (verify={not args.no_verify}, dry_run={args.dry_run})...")
                 rep = printer.restore_eeprom(args.restore, verify=not args.no_verify, dry_run=args.dry_run)
                 print(f"Restore complete. {len(rep)} registers processed.")
 
             if args.reset:
+                if not args.yes and not args.dry_run:
+                    st = printer.get_status()
+                    confirm = input(f"\nCONFIRMATION: Reset waste counters on {des_name} (SN: {st.serial})? [y/N]: ").strip().lower()
+                    if confirm not in ("y", "yes"):
+                        print("Reset aborted by user.")
+                        return 0
+
                 print(f"\nResetting waste counters (verify={not args.no_verify}, dry_run={args.dry_run})...")
                 rep = printer.reset_waste(verify=not args.no_verify, dry_run=args.dry_run)
                 for addr, old_v, new_v, ok in rep:
@@ -868,6 +944,7 @@ def main() -> None:
     parser.add_argument("--clean", type=int, nargs="?", const=1, help="Trigger head cleaning (1=Std, 3=Power)")
     parser.add_argument("--no-verify", action="store_true", help="Disable write read-back verification")
     parser.add_argument("--dry-run", action="store_true", help="Simulate writes without modifying EEPROM")
+    parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm prompts for write operations")
     parser.add_argument("--gui", action="store_true", help="Force graphical user interface mode")
 
     args = parser.parse_args()

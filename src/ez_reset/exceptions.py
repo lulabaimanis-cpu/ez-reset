@@ -18,6 +18,11 @@ class ProtocolError(Exception):
     pass
 
 
+class D4ProtocolError(ProtocolError):
+    """Raised when an IEEE 1284.4 D4 protocol packet violation or timeout occurs."""
+    pass
+
+
 class BackupError(Exception):
     """Raised when EEPROM backup or dump fails (e.g. read error on any cell)."""
     pass
@@ -26,3 +31,4 @@ class BackupError(Exception):
 class RestoreValidationError(Exception):
     """Raised when an EEPROM restore file fails safety or integrity validation."""
     pass
+

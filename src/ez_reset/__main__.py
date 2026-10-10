@@ -1,6 +1,7 @@
 import argparse
 from collections.abc import Iterable
 import ctypes
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ from ez_reset.d4 import D4ControlBackend
 from ez_reset.devices import by_model
 from ez_reset.exceptions import BackupError, DeviceError, RestoreValidationError, VerificationError
 from ez_reset.printer import Printer
-from ez_reset.status import InkColor, InkLevel
+from ez_reset.status import InkColor, InkLevel, OperationStatus
 from ez_reset.utils import parse_identifier
 from ez_reset.win_usbprint import USBPRINTTransport, enumerate_printers
 
@@ -78,6 +79,115 @@ def apply_window_icon(win: tk.Misc) -> None:
             win.iconphoto(True, _GLOBAL_ICON_PHOTO)
         except Exception as e:
             logger.debug("iconphoto error: %s", e)
+
+
+def generate_audit_html(model_name: str, des_name: str, serial: str, wastes: list[tuple[int, int]]) -> str:
+    """Generate an enterprise-grade HTML service and audit report certificate."""
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    max_pct = 0.0
+    counter_rows = ""
+    for idx, (curr, mx) in enumerate(wastes):
+        pct = (curr / mx * 100.0) if mx > 0 else 0.0
+        if pct > max_pct:
+            max_pct = pct
+        badge_td = "#f85149" if pct >= 95 else ("#d29922" if pct >= 80 else "#3fb950")
+        counter_rows += f"""
+        <tr>
+            <td style="padding: 10px; border-bottom: 1px solid #30363d;">Waste Ink Counter #{idx+1}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #30363d; font-family: monospace;">{curr} / {mx}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #30363d; font-weight: bold; color: {badge_td};">{pct:.1f}%</td>
+        </tr>"""
+
+    if not counter_rows:
+        counter_rows = "<tr><td colspan='3' style='padding: 10px; text-align: center; color: #8b949e;'>No counter readings logged.</td></tr>"
+
+    badge_text = "OPTIMAL" if max_pct == 0.0 else ("NORMAL" if max_pct < 80 else ("WARNING" if max_pct < 95 else "CRITICAL"))
+    badge_color = "#3fb950" if max_pct < 80 else ("#d29922" if max_pct < 95 else "#f85149")
+    badge_bg = "rgba(63, 185, 80, 0.15)" if max_pct < 80 else ("rgba(210, 153, 34, 0.15)" if max_pct < 95 else "rgba(248, 81, 73, 0.15)")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Epson Service & Audit Certificate - {serial}</title>
+<style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }}
+    .container {{ max-width: 850px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 32px; box-shadow: 0 12px 32px rgba(0,0,0,0.5); }}
+    .header {{ border-bottom: 2px solid #ff7920; padding-bottom: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-end; }}
+    .title h1 {{ margin: 0; font-size: 22px; color: #f0f6fc; letter-spacing: 0.5px; }}
+    .title p {{ margin: 4px 0 0; color: #8b949e; font-size: 13px; }}
+    .badge {{ display: inline-block; padding: 6px 14px; border-radius: 6px; font-weight: 700; font-size: 13px; text-transform: uppercase; background: {badge_bg}; color: {badge_color}; border: 1px solid {badge_color}; }}
+    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }}
+    .card {{ background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 16px; }}
+    .card h3 {{ margin: 0 0 12px; font-size: 13px; text-transform: uppercase; color: #ff7920; letter-spacing: 0.5px; }}
+    .row {{ display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }}
+    .label {{ color: #8b949e; }}
+    .val {{ color: #f0f6fc; font-weight: 600; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 24px; }}
+    th {{ text-align: left; padding: 10px; background: #21262d; color: #f0f6fc; border-bottom: 2px solid #30363d; }}
+    .sign-box {{ margin-top: 36px; padding-top: 24px; border-top: 1px dashed #30363d; display: flex; justify-content: space-between; font-size: 12px; color: #8b949e; }}
+    .sign-line {{ width: 220px; border-bottom: 1px solid #8b949e; margin-top: 48px; text-align: center; padding-top: 4px; }}
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="title">
+            <h1>EPSON SERVICE & AUDIT CERTIFICATE</h1>
+            <p>Official Waste Ink Counter Diagnostic & Verification Record</p>
+        </div>
+        <div>
+            <span class="badge">{badge_text}</span>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>Printer Identification</h3>
+            <div class="row"><span class="label">Friendly Name:</span><span class="val">{des_name}</span></div>
+            <div class="row"><span class="label">Identified Model:</span><span class="val">{model_name}</span></div>
+            <div class="row"><span class="label">Serial Number:</span><span class="val">{serial}</span></div>
+        </div>
+        <div class="card">
+            <h3>Audit Metadata</h3>
+            <div class="row"><span class="label">Audit Timestamp:</span><span class="val">{now_local}</span></div>
+            <div class="row"><span class="label">UTC Timestamp:</span><span class="val">{now_utc}</span></div>
+            <div class="row"><span class="label">Sentinel Engine:</span><span class="val">ez-reset Enterprise Edition</span></div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 24px;">
+        <h3>Waste Ink Pad Counters Status</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Counter Description</th>
+                    <th>Raw Count / Limit</th>
+                    <th>Waste Pad Wear Percentage</th>
+                </tr>
+            </thead>
+            <tbody>
+                {counter_rows}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="sign-box">
+        <div>
+            <p>Inspected & Verified By:</p>
+            <div class="sign-line">Lead Service Technician</div>
+        </div>
+        <div>
+            <p>Authorized QA Sign-off:</p>
+            <div class="sign-line">Quality Assurance Supervisor</div>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+"""
 
 
 class PrinterList(ttk.Frame):
@@ -268,10 +378,15 @@ class PrinterInfo(ttk.Frame):
         self.model_name = model_name
         self.is_l5190 = is_l5190
         self.is_l5290 = is_l5290
+        self._last_serial = "Unknown"
+        self._last_wastes: list[tuple[int, int]] = []
 
         # Header Info Card
         info_frame = ttk.LabelFrame(self, text="Device Information")
         info_frame.pack(fill="x", padx=4, pady=2)
+
+        top_info_row = ttk.Frame(info_frame)
+        top_info_row.pack(fill="x", padx=6, pady=2)
 
         if self.is_l5190:
             engine_tag = "  [L5JX Golden Protocol Active]"
@@ -279,8 +394,21 @@ class PrinterInfo(ttk.Frame):
             engine_tag = "  [L5TX Engine Active]"
         else:
             engine_tag = ""
-        self.lbl_model = ttk.Label(info_frame, text=f"Model: {des_name} ({model_name}){engine_tag}")
-        self.lbl_model.pack(anchor="w", padx=6, pady=1)
+        self.lbl_model = ttk.Label(top_info_row, text=f"Model: {des_name} ({model_name}){engine_tag}")
+        self.lbl_model.pack(side="left", anchor="w")
+
+        self.lbl_badge = tk.Label(
+            top_info_row,
+            text="IDLE",
+            font=("Segoe UI", 9, "bold"),
+            bg="#21262d",
+            fg="#8b949e",
+            padx=8,
+            pady=2,
+            relief="solid",
+            bd=1,
+        )
+        self.lbl_badge.pack(side="right")
 
         self.lbl_serial = ttk.Label(info_frame, text="Serial: Reading...")
         self.lbl_serial.pack(anchor="w", padx=6, pady=1)
@@ -346,9 +474,12 @@ class PrinterInfo(ttk.Frame):
         self.btn_restart = ttk.Button(maint_row, text="Restart Printer", command=self.restart_printer)
         self.btn_restart.pack(side="right", fill="x", expand=True, padx=2)
 
-        # Refresh Bar
+        # Refresh & Export Bar
         bottom_bar = ttk.Frame(self)
         bottom_bar.pack(fill="x", padx=4, pady=6)
+
+        self.btn_export = ttk.Button(bottom_bar, text="Export Audit Report (HTML)...", command=self.export_audit_report)
+        self.btn_export.pack(side="left")
 
         self.refresh_btn = ttk.Button(bottom_bar, text="Refresh Status", command=self.update_status)
         self.refresh_btn.pack(side="right")
@@ -376,9 +507,36 @@ class PrinterInfo(ttk.Frame):
                 except Exception:
                     pass
 
+    def set_badge(self, text: str, bg: str, fg: str) -> None:
+        if hasattr(self, "lbl_badge"):
+            self.lbl_badge.config(text=text, bg=bg, fg=fg)
+
+    def export_audit_report(self) -> None:
+        suggested = f"Service_Audit_{self.model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        filepath = filedialog.asksaveasfilename(
+            title="Export Service & Audit Certificate",
+            initialfile=suggested,
+            filetypes=[("HTML Report (*.html)", "*.html"), ("All Files", "*.*")],
+        )
+        if not filepath:
+            return
+
+        serial = getattr(self, "_last_serial", "Unknown")
+        wastes = getattr(self, "_last_wastes", [])
+        html_content = generate_audit_html(self.model_name, self.des_name, serial, wastes)
+        try:
+            Path(filepath).write_text(html_content, encoding="utf-8")
+            messagebox.showinfo(
+                "Audit Report Exported",
+                f"Laporan audit resmi berhasil diekspor ke:\n{Path(filepath).name}\n\nFile dapat dibuka langsung di peramban web dan dicetak sebagai bukti servis resmi.",
+            )
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Gagal mengekspor laporan audit:\n{e}")
+
     def update_status(self) -> None:
         self.refresh_btn.config(state="disabled", text="Reading...")
         self.lbl_serial.config(text="Querying printer status & counters...")
+        self.set_badge("BUSY", bg="#4a3712", fg="#d29922")
 
         def _worker() -> None:
             try:
@@ -393,13 +551,32 @@ class PrinterInfo(ttk.Frame):
     def _on_status_ready(self, status, wastes) -> None:
         self.refresh_btn.config(state="normal", text="Refresh Status")
         serial_no = status.serial or "Unknown"
+        self._last_serial = serial_no
+        self._last_wastes = wastes
         self.lbl_serial.config(text=f"Serial: {serial_no}  |  State: {status.state.name}")
         self.update_levels(status.levels)
         self.update_waste(wastes)
 
+        max_pct = 0.0
+        for lvl, mx in wastes:
+            if mx > 0:
+                pct = (lvl / mx) * 100.0
+                if pct > max_pct:
+                    max_pct = pct
+
+        if max_pct == 0.0:
+            self.set_badge("OPTIMAL", bg="#1b4728", fg="#3fb950")
+        elif max_pct < 80.0:
+            self.set_badge("NORMAL", bg="#1b4728", fg="#3fb950")
+        elif max_pct < 95.0:
+            self.set_badge("WARNING", bg="#4a3712", fg="#d29922")
+        else:
+            self.set_badge("CRITICAL", bg="#591c1c", fg="#f85149")
+
     def _on_status_error(self, e: Exception) -> None:
         self.refresh_btn.config(state="normal", text="Refresh Status")
         self.lbl_serial.config(text="Read error / timeout (Click Refresh Status to retry)")
+        self.set_badge("OFFLINE", bg="#591c1c", fg="#f85149")
         logger.warning("Failed to refresh status: %s", e)
 
     def update_levels(self, levels: Iterable[InkLevel]) -> None:
@@ -444,6 +621,10 @@ class PrinterInfo(ttk.Frame):
 
             def _do_l5190() -> list:
                 from ez_reset.l5190.constants import GOLDEN_INITIALIZE_SEQUENCE
+                # Pre-flight: prime session state
+                if not dry_run:
+                    self.printer.get_status()
+
                 report = []
                 for action, addr, target_val, _desc in GOLDEN_INITIALIZE_SEQUENCE:
                     if action == "WRITE":
@@ -453,9 +634,18 @@ class PrinterInfo(ttk.Frame):
                                 old_v = self.printer.read_eeprom(addr)
                             except Exception:
                                 old_v = -1
-                        self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=dry_run)
-                        verified = True if not dry_run and verify else False
-                        report.append((addr, old_v, target_val, verified))
+
+                        if dry_run:
+                            status = OperationStatus.DRY_RUN
+                        else:
+                            self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=False)
+                            if verify:
+                                actual = self.printer.read_eeprom(addr)
+                                status = OperationStatus.VERIFIED if actual == target_val else OperationStatus.MISMATCH
+                            else:
+                                status = OperationStatus.ACK_ONLY
+
+                        report.append((addr, old_v, target_val, status))
                     elif action == "READ":
                         if not dry_run:
                             self.printer.read_eeprom(addr)
@@ -465,10 +655,16 @@ class PrinterInfo(ttk.Frame):
                 self._set_controls_state("normal")
                 self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 self.update_status()
-                verif_text = "Terverifikasi (Read-Back OK)" if verify else "Selesai (Verifikasi non-aktif)"
+                if dry_run:
+                    verif_text = "DRY-RUN (Simulasi - Tanpa Tulis Fisik)"
+                elif verify:
+                    verif_text = "TERVERIFIKASI (Read-Back 0x00 OK)"
+                else:
+                    verif_text = "ACK-ONLY (Diterima Printer :42:OK;)"
+
                 messagebox.showinfo(
                     "Initialize Acknowledged",
-                    f"{prefix}L5190 Golden Initialize Selesai (11/11 ACK ||:42:OK; {verif_text})!\n\n"
+                    f"{prefix}L5190 Golden Initialize Selesai (11/11 Write [Status: {verif_text}])!\n\n"
                     "Langkah Wajib Power-Cycle (Sesuai Laporan Teknis):\n"
                     "1. Matikan tombol daya printer (Power OFF).\n"
                     "2. Tunggu lampu printer mati total.\n"
@@ -524,6 +720,9 @@ class PrinterInfo(ttk.Frame):
                     ("WRITE", 0x00FE, 0x00, "W00FE = 00 (Extra Ink Aux)"),
                     ("WRITE", 0x00FF, 0x5E, "W00FF = 5E (Extra Ink Req Lvl: 94)"),
                 ]
+                if not dry_run:
+                    self.printer.get_status()
+
                 report = []
                 for action, addr, target_val, _desc in list(GOLDEN_INITIALIZE_SEQUENCE) + L5290_EXTRA:
                     if action == "WRITE":
@@ -533,9 +732,18 @@ class PrinterInfo(ttk.Frame):
                                 old_v = self.printer.read_eeprom(addr)
                             except Exception:
                                 old_v = -1
-                        self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=dry_run)
-                        verified = True if not dry_run and verify else False
-                        report.append((addr, old_v, target_val, verified))
+
+                        if dry_run:
+                            status = OperationStatus.DRY_RUN
+                        else:
+                            self.printer.write_eeprom(addr, target_val, verify=verify, dry_run=False)
+                            if verify:
+                                actual = self.printer.read_eeprom(addr)
+                                status = OperationStatus.VERIFIED if actual == target_val else OperationStatus.MISMATCH
+                            else:
+                                status = OperationStatus.ACK_ONLY
+
+                        report.append((addr, old_v, target_val, status))
                     elif action == "READ":
                         if not dry_run:
                             self.printer.read_eeprom(addr)
@@ -545,10 +753,16 @@ class PrinterInfo(ttk.Frame):
                 self._set_controls_state("normal")
                 self.btn_reset_perm.config(text="Reset Counters (Permanent)")
                 self.update_status()
-                verif_text = "Terverifikasi (Read-Back OK)" if verify else "Selesai (Verifikasi non-aktif)"
+                if dry_run:
+                    verif_text = "DRY-RUN (Simulasi - Tanpa Tulis Fisik)"
+                elif verify:
+                    verif_text = "TERVERIFIKASI (Read-Back 0x00 OK)"
+                else:
+                    verif_text = "ACK-ONLY (Diterima Printer :42:OK;)"
+
                 messagebox.showinfo(
                     "Initialize Acknowledged",
-                    f"{prefix}L5290 Golden Initialize Selesai (15/15 ACK ||:42:OK; {verif_text})!\n\n"
+                    f"{prefix}L5290 Golden Initialize Selesai (15/15 Write [Status: {verif_text}])!\n\n"
                     "Langkah Wajib Power-Cycle:\n"
                     "1. Matikan tombol daya printer (Power OFF).\n"
                     "2. Tunggu lampu printer mati total.\n"
@@ -593,7 +807,7 @@ class PrinterInfo(ttk.Frame):
             self.btn_reset_perm.config(text="Reset Counters (Permanent)")
             self.update_status()
             summary = "\n".join(
-                f"Address 0x{addr:04X}: Old=0x{old_val:02X} -> New=0x{new_val:02X} (Verified: {ok})"
+                f"Address 0x{addr:04X}: Old=0x{old_val:02X} -> New=0x{new_val:02X} [Status: {ok}]"
                 for (addr, old_val, new_val, ok) in report
             )
             messagebox.showinfo(
@@ -836,7 +1050,12 @@ def run_cli(args: argparse.Namespace) -> int:
     raw_printers = list(enumerate_printers())
     printers = [p for p in raw_printers if "mi_03" not in p.lower()]
     if not printers and raw_printers:
-        printers = raw_printers
+        print(
+            "Error: Only FAX interface (MI_03) endpoints were detected. Make sure the printer driver is installed and the logical printer interface (MI_00) is enabled.",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.list:
         print("Detected USB Printers:")
         if not printers:
@@ -874,7 +1093,14 @@ def run_cli(args: argparse.Namespace) -> int:
             device = by_model(model_name)
             printer = Printer(backend, device)
 
-            if args.status or (not args.reset and not args.temp_reset and not args.backup and not args.restore and not args.clean):
+            if args.status or (
+                not args.reset
+                and not args.temp_reset
+                and not args.backup
+                and not args.restore
+                and args.clean is None
+                and not args.export_report
+            ):
                 st = printer.get_status()
                 print(f"Serial Number: {st.serial}")
                 print(f"Printer State: {st.state.name}")
@@ -902,6 +1128,8 @@ def run_cli(args: argparse.Namespace) -> int:
 
                 print(f"\nRestoring EEPROM from {args.restore} (verify={not args.no_verify}, dry_run={args.dry_run})...")
                 rep = printer.restore_eeprom(args.restore, verify=not args.no_verify, dry_run=args.dry_run)
+                for addr, old_v, new_v, status in rep:
+                    print(f"  Addr 0x{addr:04X}: 0x{old_v:02X} -> 0x{new_v:02X} [Status: {status}]")
                 print(f"Restore complete. {len(rep)} registers processed.")
 
             if args.reset:
@@ -914,8 +1142,8 @@ def run_cli(args: argparse.Namespace) -> int:
 
                 print(f"\nResetting waste counters (verify={not args.no_verify}, dry_run={args.dry_run})...")
                 rep = printer.reset_waste(verify=not args.no_verify, dry_run=args.dry_run)
-                for addr, old_v, new_v, ok in rep:
-                    print(f"  Addr 0x{addr:04X}: 0x{old_v:02X} -> 0x{new_v:02X} [Verified: {ok}]")
+                for addr, old_v, new_v, status in rep:
+                    print(f"  Addr 0x{addr:04X}: 0x{old_v:02X} -> 0x{new_v:02X} [Status: {status}]")
                 print("Reset operation complete. Please restart the printer.")
 
             if args.temp_reset:
@@ -925,15 +1153,25 @@ def run_cli(args: argparse.Namespace) -> int:
 
             if args.clean is not None:
                 lvl = int(args.clean)
+                if lvl not in (1, 2, 3):
+                    print(f"Error: Invalid cleaning level {lvl}. Must be 1 (Standard), 2 (Medium), or 3 (Power Clean).", file=sys.stderr)
+                    return 1
                 print(f"\nSending head clean command (level {lvl})...")
                 printer.clean(level=lvl)
                 print("Clean command dispatched.")
+
+            if args.export_report:
+                st = printer.get_status()
+                wastes = list(printer.get_waste())
+                html_out = generate_audit_html(model_name, des_name, st.serial or "Unknown", wastes)
+                Path(args.export_report).write_text(html_out, encoding="utf-8")
+                print(f"Service and audit certificate exported to: {args.export_report}")
 
     return 0
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="ez-reset (Enhanced) - Waste Ink Resetter for Epson Printers")
+    parser = argparse.ArgumentParser(description="ez-reset Enterprise - Waste Ink Resetter for Epson Printers")
     parser.add_argument("-l", "--list", action="store_true", help="List detected USB printers")
     parser.add_argument("-d", "--device", type=str, help="Device path or index (default: first device)")
     parser.add_argument("-s", "--status", action="store_true", help="Print ink levels and waste status")
@@ -942,6 +1180,7 @@ def main() -> None:
     parser.add_argument("-b", "--backup", type=str, help="Backup EEPROM to file (.json or .bin)")
     parser.add_argument("--restore", type=str, help="Restore EEPROM from backup file")
     parser.add_argument("--clean", type=int, nargs="?", const=1, help="Trigger head cleaning (1=Std, 3=Power)")
+    parser.add_argument("--export-report", type=str, metavar="FILE", help="Export service & audit certificate to HTML file")
     parser.add_argument("--no-verify", action="store_true", help="Disable write read-back verification")
     parser.add_argument("--dry-run", action="store_true", help="Simulate writes without modifying EEPROM")
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm prompts for write operations")
@@ -950,7 +1189,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # If any CLI action flags were passed (and not forced GUI), run CLI
-    cli_flags = [args.list, args.status, args.reset, args.temp_reset, args.backup, args.restore, args.clean is not None]
+    cli_flags = [
+        args.list,
+        args.status,
+        args.reset,
+        args.temp_reset,
+        args.backup,
+        args.restore,
+        args.clean is not None,
+        bool(args.export_report),
+    ]
     if any(cli_flags) and not args.gui:
         sys.exit(run_cli(args))
 

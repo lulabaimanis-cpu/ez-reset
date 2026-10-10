@@ -16,6 +16,14 @@ if TYPE_CHECKING:
 from .utils import parse_status_struct
 
 
+class OperationStatus(str, Enum):
+    VERIFIED = "VERIFIED"
+    ACK_ONLY = "ACK_ONLY"
+    DRY_RUN = "DRY_RUN"
+    FAILED = "FAILED"
+    MISMATCH = "MISMATCH"
+
+
 class PrinterState(Enum):
     ERROR = 0x00
     SELF_PRINTING = 0x01

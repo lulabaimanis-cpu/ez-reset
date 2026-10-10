@@ -38,7 +38,7 @@ class USBPRINTTransport(Transport):
 
     def __enter__(self) -> Self:
         logger.debug("CreateFileW(%s)", self.path)
-        self.handle = CreateFileW(
+        handle = CreateFileW(
             self.path,
             GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -47,17 +47,26 @@ class USBPRINTTransport(Transport):
             FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
             None,
         )
+        self.handle = handle
 
-        logger.debug("    Opened %s on handle %d", self.path, self.handle.handle)
-
-        logger.debug(
-            "DeviceIoControl(%d, IOCTL_USBPRINT_SOFT_RESET, NULL, 1024)",
-            self.handle.handle,
-        )
-        DeviceIoControl(self.handle, IOCTL_USBPRINT_SOFT_RESET, None, 1024)
-        logger.debug("    Issued soft reset to %d", self.handle.handle)
-
-        self.closed = False
+        try:
+            logger.debug("    Opened %s on handle %d", self.path, self.handle.handle)
+            logger.debug(
+                "DeviceIoControl(%d, IOCTL_USBPRINT_SOFT_RESET, NULL, 1024)",
+                self.handle.handle,
+            )
+            DeviceIoControl(self.handle, IOCTL_USBPRINT_SOFT_RESET, None, 1024)
+            logger.debug("    Issued soft reset to %d", self.handle.handle)
+            self.closed = False
+        except Exception:
+            if self.handle is not None:
+                try:
+                    self.handle.close()
+                except Exception:
+                    pass
+                self.handle = None
+            self.closed = True
+            raise
 
         return self
 
@@ -77,6 +86,7 @@ class USBPRINTTransport(Transport):
                 self.handle.close()
             except Exception:
                 pass
+            self.handle = None
             self.closed = True
 
         return False
@@ -137,10 +147,12 @@ class USBPRINTTransport(Transport):
             msg = f"Handle to USBPRINT device {self.path} is closed"
             raise OSError(msg)
 
-        deadline = time.time() + timeout_sec
+        deadline = time.monotonic() + timeout_sec
         while len(self._buffer) < size:
-            rem = max(0.5, deadline - time.time())
-            if time.time() >= deadline:
+            rem = max(0.5, deadline - time.monotonic())
+            if time.monotonic() >= deadline:
+                # Flush stale buffer on timeout to prevent desync
+                self._buffer = b""
                 raise TimeoutError(f"Timed out waiting for {size} bytes from printer (got {len(self._buffer)} bytes).")
 
             data = self._read_chunk_with_watchdog(MAX_TRANSFER_SIZE, timeout_sec=rem)
@@ -156,8 +168,8 @@ class USBPRINTTransport(Transport):
 
     def drain(self, timeout_sec: float = 0.2) -> None:
         """Safely drain any pending data in the bulk IN buffer without blocking indefinitely."""
-        deadline = time.time() + 1.0
-        while time.time() < deadline:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
             try:
                 data = self._read_chunk_with_watchdog(MAX_TRANSFER_SIZE, timeout_sec=timeout_sec)
                 if not data:

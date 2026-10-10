@@ -11,7 +11,7 @@ from typing import Any
 from .control import ControlBackend
 from .devices import Device
 from .exceptions import BackupError, ProtocolError, RestoreValidationError, VerificationError
-from .status import Status
+from .status import OperationStatus, Status
 
 logger = logging.getLogger(__name__)
 
@@ -179,13 +179,14 @@ class Printer:
         verify: bool = True,
         dry_run: bool = False,
         force: bool = False,
-    ) -> list[tuple[int, int, int, bool]]:
+    ) -> list[tuple[int, int, int, OperationStatus]]:
         """
         Restore EEPROM from backup file with strict safety verification:
         - Validates file exists, parses cleanly, and bounds are valid (0x00..0xFF)
         - Validates that byte values are valid (0..255)
+        - Recomputes and verifies SHA-256 cryptographic hash from backup metadata
         - Matches printer model to prevent bricking mainboard with cross-model backup
-        - Returns actual verification status per address
+        - Returns explicit OperationStatus per address (VERIFIED, ACK_ONLY, DRY_RUN, MISMATCH, FAILED)
         """
         with self._lock:
             path = Path(filepath)
@@ -208,17 +209,33 @@ class Printer:
                 except json.JSONDecodeError as jde:
                     raise RestoreValidationError(f"Invalid JSON in backup file: {jde}") from jde
 
-                backup_model = raw_data.get("printer_model", "").strip()
-                current_model = self.identify().get("MDL", self.device.model_name).strip()
+                backup_model = str(raw_data.get("printer_model", "")).strip()
+                ident = self.identify()
+                current_model = ident.get("MDL", self.device.model_name or "").strip()
 
                 # Strict Model Match Guard
-                if not force and backup_model and current_model:
-                    norm_backup = backup_model.upper().replace(" SERIES", "").strip()
-                    norm_current = current_model.upper().replace(" SERIES", "").strip()
-                    if norm_backup != norm_current:
+                if not force:
+                    if not current_model:
                         raise RestoreValidationError(
-                            f"Model mismatch! Backup is for '{backup_model}', but connected printer is '{current_model}'. "
-                            "Restoring data across different printer models can cause irreversible damage. Aborting."
+                            "Cannot verify connected printer model! Restoring without model verification is unsafe (use force=True to override)."
+                        )
+                    if backup_model:
+                        def _clean_mdl(name: str) -> str:
+                            u = name.upper().strip()
+                            if u.startswith("EPSON "):
+                                u = u[6:].strip()
+                            return u.replace(" SERIES", "").strip()
+
+                        norm_backup = _clean_mdl(backup_model)
+                        norm_current = _clean_mdl(current_model)
+                        if norm_backup != norm_current:
+                            raise RestoreValidationError(
+                                f"Model mismatch! Backup is for '{backup_model}', but connected printer is '{current_model}'. "
+                                "Restoring data across different printer models can cause irreversible damage. Aborting."
+                            )
+                    else:
+                        raise RestoreValidationError(
+                            "Backup file does not declare target printer model! Use force=True if you are certain this file is safe."
                         )
 
                 eeprom_map = raw_data.get("eeprom", {})
@@ -234,7 +251,26 @@ class Printer:
                         raise RestoreValidationError(f"Byte value {val} at 0x{addr:04X} is out of valid byte range (0..255).")
                     entries[addr] = val
 
-            results: list[tuple[int, int, int, bool]] = []
+                # Cryptographic Hash & Range Integrity Verification
+                if "sha256" in raw_data and "range" in raw_data:
+                    rng = raw_data["range"]
+                    if isinstance(rng, list) and len(rng) == 2:
+                        r_start, r_end = rng[0], rng[1]
+                        missing = [a for a in range(r_start, r_end + 1) if a not in entries]
+                        if missing:
+                            raise RestoreValidationError(
+                                f"Backup file is truncated or incomplete: missing {len(missing)} address(es) in range [{r_start}..{r_end}]."
+                            )
+                        reconstructed = bytes([entries[a] for a in range(r_start, r_end + 1)])
+                        computed_sha = hashlib.sha256(reconstructed).hexdigest()
+                        if computed_sha.lower() != str(raw_data["sha256"]).lower():
+                            raise RestoreValidationError(
+                                f"Backup checksum failure! SHA-256 integrity check failed "
+                                f"(expected {raw_data['sha256']}, computed {computed_sha}). "
+                                "The backup file may be corrupt or tampered with. Aborting."
+                            )
+
+            results: list[tuple[int, int, int, OperationStatus]] = []
             for addr, target_val in sorted(entries.items()):
                 old_val = -1
                 if not dry_run:
@@ -243,18 +279,22 @@ class Printer:
                     except Exception:
                         old_val = -1
 
-                verified = False
-                if not dry_run:
-                    self.write_eeprom(addr, target_val, verify=verify, dry_run=False)
-                    if verify:
-                        actual = self.read_eeprom(addr)
-                        verified = (actual == target_val)
-                    else:
-                        verified = True
+                if dry_run:
+                    status = OperationStatus.DRY_RUN
                 else:
-                    verified = True
+                    try:
+                        self.write_eeprom(addr, target_val, verify=verify, dry_run=False)
+                        if verify:
+                            actual = self.read_eeprom(addr)
+                            status = OperationStatus.VERIFIED if actual == target_val else OperationStatus.MISMATCH
+                        else:
+                            status = OperationStatus.ACK_ONLY
+                    except Exception as wex:
+                        logger.error("Failed to write EEPROM address 0x%04X: %s", addr, wex)
+                        results.append((addr, old_val, target_val, OperationStatus.FAILED))
+                        raise
 
-                results.append((addr, old_val, target_val, verified))
+                results.append((addr, old_val, target_val, status))
 
             return results
 
@@ -281,30 +321,38 @@ class Printer:
         self,
         verify: bool = True,
         dry_run: bool = False,
-    ) -> list[tuple[int, int, int, bool]]:
-        """Reset waste ink counters defined for this model with verification and report."""
+    ) -> list[tuple[int, int, int, OperationStatus]]:
+        """Reset waste ink counters defined for this model with pre-flight check, verification, and report."""
         with self._lock:
-            report: list[tuple[int, int, int, bool]] = []
-            for addr, target_value in self.device.reset.items():
-                old_value = -1
-                if not dry_run:
+            # Pre-flight: read all old values first to confirm connectivity and current counter state
+            old_values: dict[int, int] = {}
+            if not dry_run:
+                for addr in self.device.reset:
                     try:
-                        old_value = self.read_eeprom(addr)
-                    except Exception:
-                        old_value = -1
+                        old_values[addr] = self.read_eeprom(addr)
+                    except Exception as e:
+                        logger.warning("Pre-flight read failed on address 0x%04X: %s", addr, e)
+                        old_values[addr] = -1
 
-                verified = False
-                if not dry_run:
-                    self.write_eeprom(addr, target_value, verify=verify, dry_run=False)
-                    if verify:
-                        actual = self.read_eeprom(addr)
-                        verified = (actual == target_value)
-                    else:
-                        verified = True
+            report: list[tuple[int, int, int, OperationStatus]] = []
+            for addr, target_value in self.device.reset.items():
+                old_value = old_values.get(addr, -1)
+                if dry_run:
+                    status = OperationStatus.DRY_RUN
                 else:
-                    verified = True
+                    try:
+                        self.write_eeprom(addr, target_value, verify=verify, dry_run=False)
+                        if verify:
+                            actual = self.read_eeprom(addr)
+                            status = OperationStatus.VERIFIED if actual == target_value else OperationStatus.MISMATCH
+                        else:
+                            status = OperationStatus.ACK_ONLY
+                    except Exception as err:
+                        logger.error("Reset write failed on 0x%04X: %s", addr, err)
+                        report.append((addr, old_value, target_value, OperationStatus.FAILED))
+                        raise
 
-                report.append((addr, old_value, target_value, verified))
+                report.append((addr, old_value, target_value, status))
 
             return report
 

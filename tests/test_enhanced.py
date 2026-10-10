@@ -170,8 +170,87 @@ class TestEnhancedEzReset(unittest.TestCase):
             with self.assertRaises(RestoreValidationError):
                 printer.restore_eeprom(alien_backup, verify=True)
 
+    def test_restore_sha256_corrupted_rejected(self):
+        """Audit Finding P1: Restore must recalculate and reject backups if SHA-256 checksum fails."""
+        backend = MockControlBackend()
+        dev = by_model("L3250 Series")
+        printer = Printer(backend, dev)
+
+        from ez_reset.exceptions import RestoreValidationError
+        with tempfile.TemporaryDirectory() as tmpdir:
+            corrupted_backup = Path(tmpdir) / "corrupt_sha.json"
+            bad_data = {
+                "format": "ez_reset_eeprom_backup",
+                "version": "1.1",
+                "printer_model": "EPSON L3250 Series",
+                "serial_number": "TEST12345",
+                "range": [0, 2],
+                "sha256": "0000000000000000000000000000000000000000000000000000000000000000",  # Fake bad hash!
+                "eeprom": {"0x0000": "0x10", "0x0001": "0x20", "0x0002": "0x30"},
+            }
+            corrupted_backup.write_text(json.dumps(bad_data))
+
+            with self.assertRaises(RestoreValidationError) as ctx:
+                printer.restore_eeprom(corrupted_backup, verify=True)
+            self.assertIn("checksum failure", str(ctx.exception).lower())
+
+    def test_restore_truncated_range_rejected(self):
+        """Audit Finding P1: Restore must fail if any address in declared range is missing."""
+        backend = MockControlBackend()
+        dev = by_model("L3250 Series")
+        printer = Printer(backend, dev)
+
+        from ez_reset.exceptions import RestoreValidationError
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trunc_backup = Path(tmpdir) / "truncated.json"
+            trunc_data = {
+                "format": "ez_reset_eeprom_backup",
+                "version": "1.1",
+                "printer_model": "EPSON L3250 Series",
+                "serial_number": "TEST12345",
+                "range": [0, 3],  # Expects 4 addresses
+                "sha256": "anything",
+                "eeprom": {"0x0000": "0x10", "0x0001": "0x20"},  # Missing 2 and 3!
+            }
+            trunc_backup.write_text(json.dumps(trunc_data))
+
+            with self.assertRaises(RestoreValidationError) as ctx:
+                printer.restore_eeprom(trunc_backup, verify=True)
+            self.assertIn("truncated or incomplete", str(ctx.exception).lower())
+
+    def test_operation_status_reporting(self):
+        """Audit Finding P1: Operation status must explicitly distinguish VERIFIED, ACK_ONLY, and DRY_RUN."""
+        from ez_reset.status import OperationStatus
+        backend = MockControlBackend(eeprom_map={0x00: 0x10, 0x01: 0x20})
+        dev = by_model("L3250 Series")
+        printer = Printer(backend, dev)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            b_file = Path(tmpdir) / "b.json"
+            printer.backup_eeprom(b_file, start=0x00, end=0x01)
+
+            # 1. Verified restore
+            rep_verif = printer.restore_eeprom(b_file, verify=True, dry_run=False)
+            self.assertEqual(rep_verif[0][3], OperationStatus.VERIFIED)
+
+            # 2. Unverified restore (ACK_ONLY)
+            rep_ack = printer.restore_eeprom(b_file, verify=False, dry_run=False)
+            self.assertEqual(rep_ack[0][3], OperationStatus.ACK_ONLY)
+
+            # 3. Dry-run restore (DRY_RUN)
+            rep_dry = printer.restore_eeprom(b_file, verify=True, dry_run=True)
+            self.assertEqual(rep_dry[0][3], OperationStatus.DRY_RUN)
+
+            # Reset waste status reporting
+            rep_reset_verif = printer.reset_waste(verify=True, dry_run=False)
+            self.assertEqual(rep_reset_verif[0][3], OperationStatus.VERIFIED)
+
+            rep_reset_dry = printer.reset_waste(verify=True, dry_run=True)
+            self.assertEqual(rep_reset_dry[0][3], OperationStatus.DRY_RUN)
+
     def test_strict_model_matching(self):
         """Audit Finding #3: Model matching must not use loose bidirectional substring."""
+        from ez_reset.exceptions import DeviceError
         # Unambiguous exact / normalized matching must succeed
         dev = by_model("L5190 Series")
         self.assertIn("5190", dev.model_name)
@@ -186,3 +265,4 @@ class TestEnhancedEzReset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

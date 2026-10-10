@@ -161,9 +161,9 @@ class L5190Workflow:
 
         # Step 1: Wait for device to go offline
         logger.info("[POWER-CYCLE] Waiting for printer to turn OFF (device disappearance)...")
-        start = time.time()
+        start = time.monotonic()
         device_gone = False
-        while time.time() - start < timeout_sec:
+        while time.monotonic() - start < timeout_sec:
             try:
                 # ADGetDeviceID should fail once power is cut
                 self.transport.get_device_id()
@@ -172,6 +172,10 @@ class L5190Workflow:
                 logger.info("[POWER-CYCLE] Device offline detected.")
                 device_gone = True
                 break
+
+        if not device_gone:
+            self.transport.close()
+            raise DeviceError("Timeout waiting for printer to turn OFF. Device remained online.")
 
         # Step 2: Release old session
         self.transport.close()
@@ -182,9 +186,9 @@ class L5190Workflow:
 
         # Step 4: Wait for device reappearance
         logger.info("[POWER-CYCLE] Waiting for printer to turn ON (device reappearance)...")
-        start = time.time()
+        start = time.monotonic()
         reappeared_port = None
-        while time.time() - start < timeout_sec:
+        while time.monotonic() - start < timeout_sec:
             resolved = resolve_l5190_printer()
             if resolved is not None:
                 reappeared_port = resolved

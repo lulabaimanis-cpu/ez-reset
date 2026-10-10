@@ -10,6 +10,7 @@ from types import TracebackType
 from typing import Self
 
 from ez_reset.control import ControlBackend
+from ez_reset.exceptions import D4ProtocolError
 from ez_reset.transport import Transport
 
 logger = logging.getLogger(__name__)
@@ -79,10 +80,15 @@ class D4Channel:
 
         return False
 
-    def _ensure_credit(self) -> None:
+    def _ensure_credit(self, timeout_sec: float = 5.0) -> None:
         if self.tx_credits < 1:
+            deadline = time.monotonic() + timeout_sec
             while self.d4.CreditRequest(self) < 1:
-                time.sleep(0.1)
+                if time.monotonic() >= deadline:
+                    raise D4ProtocolError(
+                        f"Timed out waiting for D4 TX credit on socket {self.ssid} after {timeout_sec:.1f}s"
+                    )
+                time.sleep(0.05)
 
     def write(self, data: bytes, progress=None) -> None:
         while len(data):
@@ -162,7 +168,11 @@ class D4:
 
     def read_next_packet(self) -> None:
         header_data = self.transport.read(6)
+        if len(header_data) < 6:
+            raise D4ProtocolError(f"Incomplete D4 packet header: expected 6 bytes, got {len(header_data)}")
         psid, ssid, length, credit, control = struct.unpack(">BBHBB", header_data)
+        if length < 6:
+            raise D4ProtocolError(f"Invalid D4 packet length {length} (smaller than 6-byte header)")
         logger.debug("< %s", " ".join(f"{x:02x}" for x in header_data))
 
         payload = self.transport.read(length - 6)
@@ -181,7 +191,8 @@ class D4:
 
     def command(self, command: D4Command, payload: bytes = b"") -> bytes:
         if command not in [command.Init, command.Exit]:
-            assert self.open_channels[0].tx_credits
+            if not self.open_channels[0].tx_credits:
+                raise D4ProtocolError("Socket 0 has no TX credits available")
 
         logger.debug("%s %s", command.name, binascii.hexlify(payload))
 
@@ -190,19 +201,26 @@ class D4:
         self.write_packet(self.open_channels[0x00], packet)
         res = self.read_packet(self.open_channels[0x00])
 
-        assert res.psid == 0
+        if res.psid != 0:
+            raise D4ProtocolError(f"Unexpected PSID {res.psid} in response to command {command.name}")
+
+        if len(res.payload) < 2:
+            raise D4ProtocolError(f"D4 response payload too short: {len(res.payload)} bytes")
 
         if res.payload[0] == 0x7F:  # Error
-            logger.error(errors.get(res.payload[3], f"0x{res.payload[3]:x}"))
+            err_code = res.payload[3] if len(res.payload) > 3 else 0
+            err_desc = errors.get(err_code, f"0x{err_code:02x}")
+            raise D4ProtocolError(f"D4 command {command.name} failed: {err_desc}")
 
-        assert res.payload[0] == command | 0x80
-        assert res.payload[1] == 0
+        if res.payload[0] != (command | 0x80) or res.payload[1] != 0:
+            raise D4ProtocolError(f"Invalid response header for command {command.name}: {res.payload[:2].hex()}")
 
         return res.payload[2:]
 
     def Init(self) -> None:
         resp = self.command(D4Command.Init, b"\x10")
-        assert resp == b"\x10"
+        if resp != b"\x10":
+            raise D4ProtocolError(f"D4 Init negotiation failed: expected 0x10, got {resp.hex()}")
 
     def Exit(self) -> None:
         self.command(D4Command.Exit)
@@ -227,7 +245,8 @@ class D4:
         res = self.command(D4Command.OpenChannel, req)
         psid, ssid, mtu, _max_credit, credit = struct.unpack(">BBHHH", res)
 
-        assert ssid == channel.ssid
+        if ssid != channel.ssid:
+            raise D4ProtocolError(f"OpenChannel SSID mismatch: requested {channel.ssid}, got {ssid}")
 
         channel.psid = psid
         channel.mtu = mtu
